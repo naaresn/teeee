@@ -1,0 +1,9 @@
+# Abaikan file lingkungan lokal yang berisi token rahasia
+.env
+
+# Abaikan cache Python agar tidak mengotori repository
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
