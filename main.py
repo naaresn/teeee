@@ -68,7 +68,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 try:
     # Menggunakan model 'gemini-1.5-flash' yang efisien
     model = genai.GenerativeModel(
-        model_name="gemini-3.6-flash",
+        model_name="gemini-3.5-flash",
         system_instruction=SYSTEM_PROMPT
     )
     logger.info("Model Gemini berhasil diinisialisasi dengan persona Karina.")
