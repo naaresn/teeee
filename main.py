@@ -65,16 +65,25 @@ if not GEMINI_API_KEY or GEMINI_API_KEY == "TEMPEL_GEMINI_API_KEY_DI_SINI":
 # =====================================================================
 genai.configure(api_key=GEMINI_API_KEY)
 
-try:
-    # Menggunakan model 'gemini-1.5-flash' yang efisien
-    model = genai.GenerativeModel(
-        model_name="gemini-3.1-flash-lite",
+# Daftar model untuk fallback. Urutan pertama adalah yang paling prioritas.
+MODEL_NAMES = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite"
+]
+
+def inisialisasi_model(model_name):
+    """Fungsi pembantu untuk membuat objek model baru."""
+    return genai.GenerativeModel(
+        model_name=model_name,
         system_instruction=SYSTEM_PROMPT
     )
-    logger.info("Model Gemini berhasil diinisialisasi dengan persona Karina.")
-except Exception as e:
-    logger.error(f"Gagal menginisialisasi model Gemini: {e}")
-    exit(1)
+
+# Inisialisasi model pertama sebagai default
+current_model_index = 0
+model = inisialisasi_model(MODEL_NAMES[current_model_index])
+logger.info(f"Model Gemini utama diinisialisasi: {MODEL_NAMES[current_model_index]}")
 
 
 # =====================================================================
@@ -83,11 +92,22 @@ except Exception as e:
 chat_sessions = {}
 MAX_HISTORY_MESSAGES = 20
 
-def dapatkan_sesi_obrolan(chat_id: int):
+def dapatkan_sesi_obrolan(chat_id: int, model_obj):
+    """
+    Mengambil atau membuat sesi chat untuk chat_id tertentu dengan model yang diberikan.
+    Jika sesi sudah ada, riwayat akan dipertahankan.
+    """
     if chat_id not in chat_sessions:
-        logger.info(f"Membuat sesi obrolan baru di Gemini untuk chat_id: {chat_id}")
-        chat_sessions[chat_id] = model.start_chat(history=[])
-    return chat_sessions[chat_id]
+        logger.info(f"Membuat sesi obrolan baru untuk chat_id: {chat_id}")
+        chat_sessions[chat_id] = {'chat': model_obj.start_chat(history=[]), 'model_name': model_obj.model_name}
+    
+    # Jika model berubah (fallback), kita perlu membuat sesi baru dengan riwayat lama
+    if chat_sessions[chat_id]['model_name'] != model_obj.model_name:
+        logger.info(f"Pindah ke model {model_obj.model_name} untuk chat_id: {chat_id}")
+        old_history = chat_sessions[chat_id]['chat'].history
+        chat_sessions[chat_id] = {'chat': model_obj.start_chat(history=old_history), 'model_name': model_obj.model_name}
+        
+    return chat_sessions[chat_id]['chat']
 
 
 # =====================================================================
@@ -125,26 +145,47 @@ async def tangani_pesan_teks(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     
-    try:
-        sesi = dapatkan_sesi_obrolan(chat_id)
-        respons_gemini = sesi.send_message(pesan_user)
-        balasan_asli = respons_gemini.text
+    # Loop untuk mencoba model satu per satu jika gagal (fallback)
+    for i in range(len(MODEL_NAMES)):
+        current_model_name = MODEL_NAMES[i]
         
-        if len(sesi.history) > MAX_HISTORY_MESSAGES:
-            sesi.history = sesi.history[-MAX_HISTORY_MESSAGES:]
-        
-        baris_pesan = [baris.strip() for baris in balasan_asli.split('\n') if baris.strip()]
-        
-        for baris in baris_pesan:
-            await update.message.reply_text(baris)
-            jeda = random.uniform(0.5, 1.5)
-            logger.info(f"Menunggu {jeda:.2f} detik sebelum mengirim pesan berikutnya...")
-            await asyncio.sleep(jeda)
-        
-    except Exception as e:
-        logger.error(f"Terjadi kesalahan saat memproses pesan dari {chat_id}: {e}")
-        pesan_fallback = "Duh biyuuu... Maaf banget, otak Karina tiba-tiba blank/eror nih. 😵"
-        await update.message.reply_text(pesan_fallback)
+        try:
+            model_obj = inisialisasi_model(current_model_name)
+            sesi = dapatkan_sesi_obrolan(chat_id, model_obj)
+            
+            respons_gemini = sesi.send_message(pesan_user)
+            balasan_asli = respons_gemini.text
+            
+            # Kelola batas riwayat
+            if len(sesi.history) > MAX_HISTORY_MESSAGES:
+                sesi.history = sesi.history[-MAX_HISTORY_MESSAGES:]
+            
+            baris_pesan = [baris.strip() for baris in balasan_asli.split('\n') if baris.strip()]
+            
+            for baris in baris_pesan:
+                await update.message.reply_text(baris)
+                jeda = random.uniform(0.5, 1.5)
+                logger.info(f"Menunggu {jeda:.2f} detik sebelum mengirim pesan berikutnya...")
+                await asyncio.sleep(jeda)
+            
+            # Jika berhasil, keluar dari loop
+            return
+
+        except Exception as e:
+            # Periksa apakah error karena limit kuota (429 atau "ResourceExhausted")
+            error_str = str(e)
+            if "429" in error_str or "ResourceExhausted" in error_str or "exhausted your daily quota" in error_str:
+                logger.warning(f"Model {current_model_name} kena limit kuota. Mencoba model selanjutnya...")
+                continue # Lanjut ke iterasi loop berikutnya (model berikutnya)
+            else:
+                # Jika error lain, log dan berhenti
+                logger.error(f"Terjadi kesalahan saat memproses pesan dengan {current_model_name} dari {chat_id}: {e}")
+                break
+    
+    # Jika semua model gagal
+    pesan_fallback = "Duh biyuuu... Maaf banget, otak Karina tiba-tiba blank/eror nih. 😵"
+    await update.message.reply_text(pesan_fallback)
+
 
 
 # =====================================================================
